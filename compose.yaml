@@ -1,0 +1,190 @@
+services:
+  nginx:
+    build:
+      context: ./DockerScripts/Nginx
+      dockerfile: ./Dockerfile
+    ports:
+      - "443:443"
+      - "80:80"
+    networks:
+      public-network:
+        ipv4_address: 175.20.0.11
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    networks:
+      public-network:
+        ipv4_address: 175.20.0.31
+      vpn-network:
+        ipv4_address: 175.21.0.31
+  notification-broker:
+    build:
+      context: ./DockerScripts/NotificationBroker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - TZ=UTC
+      - MOSQUITTO_DYNSEC_PASSWORD=password4231
+    volumes:
+      - ./DockerScripts/NotificationBroker/config/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - ./DockerScripts/NotificationBroker/config/go-auth.conf:/etc/mosquitto/conf.d/go-auth.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /etc/mosquitto/certs:/etc/mosquitto/certs:ro
+      - /etc/mosquitto/ca_certificates:/etc/mosquitto/ca_certificates:ro
+      - notification-data:/mosquitto/data
+    networks:
+      public-network:
+        ipv4_address: 172.20.0.51
+      vpn-network:
+        ipv4_address: 172.21.0.51
+  db:
+    image: postgres:latest
+    restart: always
+    shm_size: 1gb
+    volumes:
+      - db_data:/var/lib/postgresql
+    environment:
+      POSTGRES_USER: "admin"
+      POSTGRES_PASSWORD: "admin4231"
+      POSTGRES_DB: "coconut"
+    ports:
+      - "5432:5432"
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.11
+  mongodb:
+    image: mongo:4.4
+    restart: unless-stopped
+    privileged: true
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password4231
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.12
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6397:6379"
+  object-master:
+    image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
+    volumes:
+      - /mnt/storage/seaweedfs/master:/data
+    command: master -ip.bind=0.0.0.0 -mdir=/data
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.61
+  object-admin:
+    image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
+    command: admin -port 80 -urlPrefix=/seaweedfs -masters="object-master:9333" -dataDir=/data
+    volumes:
+      - /mnt/storage/seaweedfs/admin:/data
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.66
+  object-volume:
+    image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
+    volumes:
+      - /mnt/storage/seaweedfs/volume:/data
+    command: volume -master=object-master:9333 -port=443 -dir=/data
+    depends_on:
+      - object-master
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.62
+  object-filer:
+    image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
+    command: filer -master=object-master:9333 -ip.bind=0.0.0.0
+    depends_on:
+      - object-master
+      - object-volume
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.63
+  adminer:
+    image: adminer:latest
+    restart: always
+    ports:
+      - "8383:8080"
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.13
+  nodered:
+    image: nodered/node-red:5.0-debian
+    env_file: ".env"
+    volumes:
+      - nodered:/data
+      - ./DockerScripts/Nodered/settings.js:/data/settings.js:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1880"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "1880:1880"
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.21
+    develop:
+      watch:
+        - action: restart
+          path: ./DockerScripts/Nodered/settings.js
+          initial_sync: true
+  mosquitto:
+    build:
+      context: ./DockerScripts/Mosquitto
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    environment:
+      - TZ=UTC
+      - MOSQUITTO_DYNSEC_PASSWORD=admin4231
+    volumes:
+      - ./DockerScripts/Nodered/config/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - mosquitto-usr:/usr/lib
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    networks:
+      vpn-network:
+        ipv4_address: 175.21.0.17
+    develop:
+      watch:
+        - action: restart
+          path: ./DockerScripts/Mosquitto/config
+          initial_sync: true
+volumes:
+  db_data:
+  mongo_data:
+  nodered:
+  notification-data:
+  mosquitto-usr:
+  mosquitto-data:
+  mosquitto-log:
+networks:
+  public-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 175.20.0.0/24
+  vpn-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 175.21.0.0/24
